@@ -46,6 +46,33 @@ async function fetchDataAndUpdateSheet() {
         const db = client!.db(DB_NAME);
         const collection = db.collection("tasks");
 
+        // First: compute majority project_main_name per project_gid to use as fallback
+        const namePipeline = [
+            {
+                $group: {
+                    _id: {
+                        project: "$project_main_gid",
+                        name: "$project_main_name",
+                    },
+                    count: { $sum: 1 },
+                },
+            },
+            { $sort: { "_id.project": 1, count: -1 } },
+            {
+                $group: {
+                    _id: "$_id.project",
+                    majority: { $first: "$_id.name" },
+                    count: { $first: "$count" },
+                },
+            },
+        ];
+
+        const nameAgg = await collection.aggregate(namePipeline).toArray();
+        const majorityNameByProject: Record<string, string> = {};
+        for (const n of nameAgg) {
+            if (n && n._id) majorityNameByProject[n._id] = n.majority || "";
+        }
+
         // Define the aggregation pipeline and carry project_main_name
         const pipeline = [
             {
@@ -141,11 +168,20 @@ async function fetchDataAndUpdateSheet() {
         };
 
         // Validate the rows before adding and normalize headers across all rows
-        const rows = results.map((result) => ({
-            project_gid: formatProjectId(result.project_gid),
-            project_main_name: result.project_main_name || "",
-            ...result.hours,
-        }));
+        const rows = results.map((result) => {
+            const rawGid = formatProjectId(result.project_gid);
+            const majority =
+                majorityNameByProject[String(result.project_gid)] || "";
+            const givenName = result.project_main_name || "";
+            const chosenName =
+                givenName && givenName.trim() !== "" ? givenName : majority;
+            return {
+                project_gid: rawGid,
+                project_main_name: chosenName,
+                _given_project_main_name: givenName,
+                ...result.hours,
+            };
+        });
         if (rows.length === 0) {
             throw new Error("No valid rows to update.");
         }
@@ -153,7 +189,11 @@ async function fetchDataAndUpdateSheet() {
         // Build a stable header row using the union of all keys across results.
         // This ensures every row has the same set of columns when written to Google Sheets.
         const keySet = new Set<string>();
-        rows.forEach((r) => Object.keys(r).forEach((k) => keySet.add(k)));
+        rows.forEach((r) =>
+            Object.keys(r).forEach((k) => {
+                if (!k.startsWith("_")) keySet.add(k);
+            })
+        );
 
         // Ensure `project_gid` & `project_main_name` are the first columns.
         // Sort other keys (assignee/email columns) alphabetically (case-insensitive).
@@ -205,6 +245,20 @@ async function fetchDataAndUpdateSheet() {
             console.log("DRY_RUN enabled - not writing to Google Sheets.");
             console.log("Headers:", headers);
             console.log("Sample rows (up to 10):", normalizedRows.slice(0, 10));
+            // Log mismatches between given and majority names
+            const mismatches = normalizedRows
+                .map((r) => ({
+                    gid: r.project_gid,
+                    given: r._given_project_main_name,
+                    chosen: r.project_main_name,
+                }))
+                .filter((x) => x.given && x.given !== x.chosen);
+            if (mismatches.length) {
+                console.log(
+                    "Found project name mismatches (given vs majority):",
+                    mismatches.slice(0, 20)
+                );
+            }
         } else {
             // Ensure sheet has enough columns to fit all headers. google-spreadsheet exposes
             // different property names across versions, so be defensive.
@@ -245,6 +299,20 @@ async function fetchDataAndUpdateSheet() {
             for (let i = 0; i < normalizedRows.length; i += BATCH_SIZE) {
                 const batch = normalizedRows.slice(i, i + BATCH_SIZE);
                 await sheet.addRows(batch);
+            }
+            // Log any automatic corrections applied from majority name mapping
+            const corrections = normalizedRows
+                .map((r) => ({
+                    gid: r.project_gid,
+                    given: r._given_project_main_name,
+                    chosen: r.project_main_name,
+                }))
+                .filter((x) => x.given && x.given !== x.chosen);
+            if (corrections.length) {
+                console.log(
+                    "Applied project_main_name corrections for projects:",
+                    corrections.slice(0, 20)
+                );
             }
         }
 
