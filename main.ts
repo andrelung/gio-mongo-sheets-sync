@@ -459,7 +459,7 @@ async function fetchDataAndUpdateSheet() {
 }
 
 // Schedule to run the task daily
-cron.schedule("0 17 * * *", fetchDataAndUpdateSheet); // executes at 5pm server time (mostly +00:00)
+cron.schedule("38 19 * * *", fetchDataAndUpdateSheet); // executes at 7:34 pm server time (mostly +00:00)
 
 console.log("Scheduler cron setup complete.");
 console.log("Starting first run on App-Start:");
