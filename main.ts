@@ -355,3 +355,7 @@ cron.schedule("0 17 * * *", fetchDataAndUpdateSheet);
 console.log("Scheduler cron setup complete.");
 console.log("Starting first run on App-Start:");
 fetchDataAndUpdateSheet();
+
+// TODO: move jovs to separate module, to allow for other jobs in future
+// TODO: implement webserver to display last sync (for health checks)
+// TODO: implement notifications
