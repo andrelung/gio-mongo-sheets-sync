@@ -46,25 +46,24 @@ async function fetchDataAndUpdateSheet() {
         const db = client!.db(DB_NAME);
         const collection = db.collection("tasks");
 
-        // Define the aggregation pipeline
+        // Define the aggregation pipeline and carry project_main_name
         const pipeline = [
             {
-                // Group by project and assignee; coalesce null assignee to a sentinel string
                 $group: {
                     _id: {
                         project: "$project_main_gid",
+                        project_main_name: "$project_main_name",
                         assignee: {
-                            $ifNull: ["$assignee_mail", "no assignee>"],
+                            $ifNull: ["$assignee_mail", "<unassigned>"],
                         },
                     },
-                    total_hours: {
-                        $sum: "$hours_completed_self",
-                    },
+                    total_hours: { $sum: "$hours_completed_self" },
                 },
             },
             {
                 $group: {
                     _id: "$_id.project",
+                    project_main_name: { $first: "$_id.project_main_name" },
                     hours_per_assignee: {
                         $push: {
                             assignee: "$_id.assignee",
@@ -77,6 +76,7 @@ async function fetchDataAndUpdateSheet() {
                 $project: {
                     _id: 0,
                     project_gid: "$_id",
+                    project_main_name: "$project_main_name",
                     hours: {
                         $arrayToObject: {
                             $map: {
@@ -107,7 +107,7 @@ async function fetchDataAndUpdateSheet() {
 
         const serviceAccountAuth = new JWT({
             email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-            key: process.env.GOOGLE_PRIVATE_KEY,
+            key: privateKey,
             scopes: ["https://www.googleapis.com/auth/spreadsheets"],
         });
 
@@ -143,6 +143,7 @@ async function fetchDataAndUpdateSheet() {
         // Validate the rows before adding and normalize headers across all rows
         const rows = results.map((result) => ({
             project_gid: formatProjectId(result.project_gid),
+            project_main_name: result.project_main_name || "",
             ...result.hours,
         }));
         if (rows.length === 0) {
@@ -154,11 +155,15 @@ async function fetchDataAndUpdateSheet() {
         const keySet = new Set<string>();
         rows.forEach((r) => Object.keys(r).forEach((k) => keySet.add(k)));
 
-        // Ensure `project_gid` is the first column
-        const headers = [
-            "project_gid",
-            ...Array.from(keySet).filter((k) => k !== "project_gid"),
-        ];
+        // Ensure `project_gid` & `project_main_name` are the first columns.
+        // Sort other keys (assignee/email columns) alphabetically (case-insensitive).
+        const otherKeys = Array.from(keySet).filter(
+            (k) => k !== "project_gid" && k !== "project_main_name"
+        );
+        otherKeys.sort((a, b) =>
+            a.localeCompare(b, undefined, { sensitivity: "base" })
+        );
+        const headers = ["project_gid", "project_main_name", ...otherKeys];
 
         // Normalize rows so each row has all header keys (fill missing hours with 0)
         const normalizedRows = rows.map((r) => {
@@ -172,6 +177,26 @@ async function fetchDataAndUpdateSheet() {
                 }
             }
             return nr;
+        });
+
+        // Sort rows by ascending project_gid (numeric-aware). project_gid may be prefixed with '\'' to force text in Sheets;
+        // strip that before numeric comparison.
+        normalizedRows.sort((a, b) => {
+            const aRaw = String(a.project_gid ?? "").replace(/^'/, "");
+            const bRaw = String(b.project_gid ?? "").replace(/^'/, "");
+            // Try numeric comparison using BigInt when possible
+            if (/^\d+$/.test(aRaw) && /^\d+$/.test(bRaw)) {
+                try {
+                    const aBig = BigInt(aRaw);
+                    const bBig = BigInt(bRaw);
+                    if (aBig < bBig) return -1;
+                    if (aBig > bBig) return 1;
+                    return 0;
+                } catch (e) {
+                    // fallthrough to string compare
+                }
+            }
+            return aRaw.localeCompare(bRaw, undefined, { numeric: true });
         });
 
         // Update Google Sheet with new data using consistent headers
@@ -229,6 +254,7 @@ async function fetchDataAndUpdateSheet() {
         // Compute per-project sums for internal / unassigned / external
         const summaryRows = normalizedRows.map((r) => {
             const project_gid = r.project_gid;
+            const project_main_name = r.project_main_name || "";
             let internal = 0;
             let unassigned = 0;
             let external = 0;
@@ -267,6 +293,7 @@ async function fetchDataAndUpdateSheet() {
 
             return {
                 project_gid,
+                project_main_name,
                 internal,
                 unassigned,
                 external,
@@ -279,6 +306,7 @@ async function fetchDataAndUpdateSheet() {
         const summarySheet = doc.sheetsByTitle[SUMMARY_TITLE];
         const summaryHeaders = [
             "project_gid",
+            "project_main_name",
             "internal",
             "external",
             "unassigned",
@@ -330,6 +358,19 @@ async function fetchDataAndUpdateSheet() {
             await ss.setHeaderRow(summaryHeaders);
             // add rows in batches
             const BATCH_SIZE_SUM = 500;
+            // Ensure summaryRows follow the same ordering as normalizedRows (which are sorted by gid)
+            const gidOrder = new Map(
+                normalizedRows.map((r, idx) => [String(r.project_gid), idx])
+            );
+            summaryRows.sort((a, b) => {
+                const ai = gidOrder.has(String(a.project_gid))
+                    ? gidOrder.get(String(a.project_gid))!
+                    : Number.MAX_SAFE_INTEGER;
+                const bi = gidOrder.has(String(b.project_gid))
+                    ? gidOrder.get(String(b.project_gid))!
+                    : Number.MAX_SAFE_INTEGER;
+                return ai - bi;
+            });
             for (let i = 0; i < summaryRows.length; i += BATCH_SIZE_SUM) {
                 const batch = summaryRows.slice(i, i + BATCH_SIZE_SUM);
                 await ss.addRows(batch);
