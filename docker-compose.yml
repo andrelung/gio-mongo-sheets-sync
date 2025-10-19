@@ -1,0 +1,9 @@
+version: "3.8"
+
+services:
+    gio-sync:
+        build: .
+        container_name: gio-mongo-sheets-sync
+        restart: unless-stopped
+        env_file:
+            - .env

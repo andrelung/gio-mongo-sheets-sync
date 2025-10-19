@@ -1,0 +1,35 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug TypeScript (ts-node)",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.ts",
+            "cwd": "${workspaceFolder}",
+            "runtimeArgs": ["-r", "ts-node/register"],
+            "env": {
+                "NODE_ENV": "development"
+            },
+            "console": "integratedTerminal",
+            "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+            "internalConsoleOptions": "neverOpen"
+        },
+        {
+            "name": "Run compiled (node dist/main.js)",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/dist/main.js",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "internalConsoleOptions": "neverOpen"
+        },
+        {
+            "name": "Attach to process",
+            "type": "node",
+            "request": "attach",
+            "port": 9229,
+            "restart": false
+        }
+    ]
+}

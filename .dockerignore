@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+.vscode
+.git
+*.log
+credentials/*.json
+credentials/mongodb-connection-uri.txt
